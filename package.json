@@ -1,0 +1,14 @@
+{
+  "name": "gridflow-ac",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Interactive AC power-flow workbench with a damped Newton-Raphson solver, DC approximation, Ybus analysis, line flows, N-1 contingency screening and local CSV/JSON exports",
+  "scripts": {
+    "test": "node --test --test-reporter=spec test/gridflow.test.cjs test/numerics.test.cjs test/physics.test.cjs test/hygiene.test.cjs test/adversarial.test.cjs ui.test.cjs"
+  },
+  "keywords": ["power-flow", "newton-raphson", "ybus", "grid", "electrical-engineering", "n-1"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}

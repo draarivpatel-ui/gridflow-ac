@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Interactive AC power-flow workbench: Newton-Raphson solver, bus voltages, line flows, N-1 contingencies and local exports.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Permissions-Policy" content="geolocation=(), camera=(), microphone=(), payment=(), usb=()">
+  <title>GridFlow AC | Power Flow Workbench</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#workbench">Skip to workbench</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">~</span>
+      <div><h1>GridFlow AC</h1></div>
+    </div>
+    <div class="topbar-actions">
+      <span id="engineBadge" class="badge">engine loading</span>
+      <button id="themeToggle" class="btn btn-ghost" type="button" aria-pressed="false">Theme: dark</button>
+      <button id="helpToggle" class="btn btn-ghost" type="button" aria-expanded="false" aria-controls="helpPanel">Guide</button>
+    </div>
+  </header>
+
+  <section id="helpPanel" class="help-panel" hidden>
+    <h2>How to use this workbench</h2>
+    <p>All networks here are <strong>synthetic benchmark networks</strong>. They are teaching cases, not published IEEE test systems or measured grid data.</p>
+    <ol>
+      <li>Pick a preset, then drag the load factor to scale every load bus.</li>
+      <li>The Newton-Raphson solver recomputes bus voltages, angles, line flows and losses synchronously.</li>
+      <li>Click a bus or a line to inspect exact computed values. Arrow keys move the selection.</li>
+      <li>Use the N-1 panel to screen every single-line outage, then export the whole experiment.</li>
+    </ol>
+    <p class="small">The convergence plot shows the real maximum mismatch at each Newton iteration. A red status means the solver honestly reported non-convergence at the voltage-collapse limit.</p>
+  </section>
+
+  <main id="workbench" class="layout" tabindex="-1">
+    <aside class="panel controls-panel" aria-label="Network controls">
+      <div class="panel-head"><h2>Network</h2></div>
+
+      <div class="control-block">
+        <label for="presetSelect">Benchmark network</label>
+        <select id="presetSelect">
+          <option value="ieee3">Synthetic benchmark: 3-bus loop</option>
+          <option value="ieee5">Synthetic benchmark: 5-bus meshed</option>
+          <option value="radial">Synthetic benchmark: 6-bus radial feeder</option>
+          <option value="stress">Synthetic benchmark: heavily loaded 4-bus</option>
+          <option value="collapse">Synthetic benchmark: voltage-collapse limit</option>
+        </select>
+        <p id="presetNote" class="hint"></p>
+      </div>
+
+      <div class="control-block">
+        <h3>Operating point</h3>
+        <div class="control-row">
+          <label for="loadFactor">Load factor</label>
+          <input id="loadFactor" type="range" min="0.1" max="2.5" step="0.05" value="1">
+          <output id="loadFactorOut" for="loadFactor">1.00x</output>
+        </div>
+        <div class="control-row">
+          <label for="baseMVA">System base (MVA)</label>
+          <input id="baseMVA" type="number" min="1" max="1000" step="10" value="100">
+        </div>
+        <div class="control-row">
+          <label for="tolerance">Convergence tolerance</label>
+          <select id="tolerance">
+            <option value="1e-6">1e-6 pu</option>
+            <option value="1e-10" selected>1e-10 pu</option>
+            <option value="1e-13">1e-13 pu</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="maxIter">Max Newton iterations</label>
+          <input id="maxIter" type="range" min="5" max="120" step="5" value="60">
+          <output id="maxIterOut" for="maxIter">60</output>
+        </div>
+      </div>
+
+      <div class="control-block">
+        <h3>Network editor</h3>
+        <div class="control-row">
+          <label for="busSelect">Bus</label>
+          <select id="busSelect"></select>
+        </div>
+        <div class="control-row">
+          <label for="busLoadP">Bus load P (pu)</label>
+          <input id="busLoadP" type="range" min="0" max="3" step="0.05" value="0">
+          <output id="busLoadPOut" for="busLoadP">0.00</output>
+        </div>
+        <div class="control-row">
+          <label for="busLoadQ">Bus load Q (pu)</label>
+          <input id="busLoadQ" type="range" min="0" max="2" step="0.05" value="0">
+          <output id="busLoadQOut" for="busLoadQ">0.00</output>
+        </div>
+        <div class="control-row">
+          <label for="branchSelect">Branch</label>
+          <select id="branchSelect"></select>
+        </div>
+        <div class="control-row">
+          <label for="branchX">Branch reactance x (pu)</label>
+          <input id="branchX" type="range" min="0.02" max="0.5" step="0.01" value="0.1">
+          <output id="branchXOut" for="branchX">0.10</output>
+        </div>
+        <div class="control-row">
+          <label for="branchRate">Branch rating (MVA)</label>
+          <input id="branchRate" type="range" min="20" max="400" step="10" value="200">
+          <output id="branchRateOut" for="branchRate">200</output>
+        </div>
+        <label class="check-row"><input id="branchStatus" type="checkbox" checked> Branch in service</label>
+      </div>
+
+      <div class="button-grid">
+        <button id="resetBtn" class="btn btn-ghost" type="button">Reset network</button>
+        <button id="contBtn" class="btn btn-primary" type="button">Run N-1 screen</button>
+      </div>
+      <p id="errorStatus" class="error-status" role="alert" hidden></p>
+    </aside>
+
+    <section class="stage" aria-label="Power-flow results">
+      <div class="panel status-panel">
+        <div class="stat-grid">
+          <div class="stat"><span class="stat-label">Solver</span><strong id="statSolver">--</strong></div>
+          <div class="stat"><span class="stat-label">Iterations</span><strong id="statIters">--</strong></div>
+          <div class="stat"><span class="stat-label">Max mismatch</span><strong id="statMismatch">--</strong></div>
+          <div class="stat"><span class="stat-label">Generation</span><strong id="statGen">--</strong></div>
+          <div class="stat"><span class="stat-label">Load</span><strong id="statLoad">--</strong></div>
+          <div class="stat"><span class="stat-label">Real losses</span><strong id="statLoss">--</strong></div>
+          <div class="stat"><span class="stat-label">Balance error</span><strong id="statBalance">--</strong></div>
+          <div class="stat"><span class="stat-label">Max line loading</span><strong id="statLoading">--</strong></div>
+        </div>
+        <p id="statusLine" class="status-line" role="status">Initializing solver</p>
+      </div>
+
+      <div class="plot-grid">
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>One-line network diagram</h2><span class="plot-note">SVG, live voltages and flows</span></div>
+          <svg id="networkSvg" viewBox="0 0 720 420" role="img" aria-label="Network one-line diagram">
+            <title>Network one-line diagram</title>
+            <desc>Buses and branches colored by solved voltage and loading.</desc>
+          </svg>
+          <p id="networkReadout" class="readout" aria-live="polite">Select a bus or branch to inspect</p>
+        </article>
+
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>Bus voltage profile</h2><span class="plot-note">pu magnitude</span></div>
+          <canvas id="voltageCanvas" width="720" height="230" tabindex="0" role="img" aria-label="Bus voltage magnitude bar chart"></canvas>
+          <p id="voltageReadout" class="readout" aria-live="polite">Probe: bus 1</p>
+        </article>
+
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>Line loading and real losses</h2><span class="plot-note">fraction of rating / pu</span></div>
+          <canvas id="loadingCanvas" width="720" height="230" tabindex="0" role="img" aria-label="Line loading bar chart"></canvas>
+          <p id="loadingReadout" class="readout" aria-live="polite">Probe: branch 1</p>
+        </article>
+
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>Newton-Raphson convergence</h2><span class="plot-note">max mismatch per iteration, log scale</span></div>
+          <canvas id="convergenceCanvas" width="720" height="220" tabindex="0" role="img" aria-label="Convergence history plot"></canvas>
+          <p id="convergenceReadout" class="readout" aria-live="polite">Real solver residual history</p>
+        </article>
+
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>Bus results</h2><span class="plot-note">computed state</span></div>
+          <div class="table-scroll">
+            <table id="busTable">
+              <caption>Solved voltage magnitude, angle and net injection for each bus</caption>
+              <thead><tr><th scope="col">Bus</th><th scope="col">Type</th><th scope="col">|V| pu</th><th scope="col">Angle deg</th><th scope="col">P pu</th><th scope="col">Q pu</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>N-1 outage screening</h2><span class="plot-note">one branch removed at a time</span></div>
+          <div class="table-scroll">
+            <table id="contTable">
+              <caption>Each row is a full AC re-solve with one in-service branch removed</caption>
+              <thead><tr><th scope="col">Outage</th><th scope="col">Solved</th><th scope="col">Max loading</th><th scope="col">Overloads</th><th scope="col">V violations</th></tr></thead>
+              <tbody><tr><td colspan="5">Press Run N-1 screen to compute</td></tr></tbody>
+            </table>
+          </div>
+          <p id="contStatus" class="readout" aria-live="polite">Not yet computed</p>
+        </article>
+      </div>
+
+      <div class="panel export-panel">
+        <div class="export-head"><h2>Export experiment</h2><span id="exportNote" class="hint">Files are generated locally from the current solved state.</span></div>
+        <div class="export-buttons">
+          <button id="jsonBtn" class="btn btn-primary" type="button">JSON snapshot</button>
+          <button id="busCsvBtn" class="btn" type="button">Bus CSV</button>
+          <button id="branchCsvBtn" class="btn" type="button">Branch CSV</button>
+          <button id="convergenceCsvBtn" class="btn" type="button">Convergence CSV</button>
+          <button id="contCsvBtn" class="btn" type="button">N-1 CSV</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Zero dependencies. All power-flow computations run locally in <code>src/gridflow.cjs</code>. Synthetic benchmark networks only.</p>
+    <p id="footerStatus">Ready</p>
+  </footer>
+
+  <script src="src/gridflow.cjs"></script>
+  <script src="app.js"></script>
+</body>
+</html>
