@@ -246,6 +246,14 @@ describe('N-1 screening and exports', () => {
     h.dispose();
   });
 
+  test('sticky controls panel is height capped and scrollable on desktop only', () => {
+    const h = bench();
+    assert.match(h.css, /\.controls-panel\s*\{[^}]*max-height:\s*calc\(100vh - 2rem\)[^}]*overflow-y:\s*auto/);
+    assert.match(h.css, /max-width:\s*980px\)\s*\{\s*\.controls-panel\s*\{[^}]*max-height:\s*none[^}]*overflow-y:\s*visible/,
+      'mobile panel must stay uncapped with no inner scroll');
+    h.dispose();
+  });
+
   test('changing the network clears the stale contingency table', () => {
     const h = bench();
     h.get('contBtn').click();
