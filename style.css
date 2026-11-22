@@ -122,7 +122,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .status-line { font-size: 0.78rem; color: var(--muted); margin-top: 10px; }
 .status-line.warn { color: var(--warn); font-weight: 600; }
 
-.plot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+.plot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 16px; }
 .plot-panel { padding: 14px 16px 12px; min-width: 0; }
 .plot-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 10px; }
 .plot-note { font-size: 0.72rem; color: var(--muted); }
@@ -131,7 +131,7 @@ canvas { display: block; width: 100%; height: auto; background: var(--surface-2)
 .seg-row { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
 .seg { border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); padding: 5px 11px; border-radius: 999px; font: inherit; font-size: 0.76rem; cursor: pointer; }
 .seg[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.table-scroll { overflow: auto; max-height: 240px; }
+.table-scroll { overflow: auto; max-width: 100%; max-height: 240px; }
 table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
 caption { text-align: left; font-size: 0.74rem; color: var(--muted); padding-bottom: 6px; }
 th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); }
