@@ -8,6 +8,9 @@
   const state = {
     preset: 'ieee5', loadFactor: 1, baseMVA: 100, tolerance: 1e-10, maxIter: 60,
     network: null, solution: null, diagnostics: null, contingency: null,
+    scan: null, baseSolution: null, derResult: null, selfTests: null,
+    der: { enabled: false, bus: 1, pSolar: 0.2, pBess: 0.3, qCap: 0.5, qGain: 8, deadband: 0.005, vRef: 1 },
+    sortKey: 'rank', sortDir: 'asc', previewBranch: null, previewRow: null,
     selectedBus: 0, selectedBranch: 0,
     probe: { voltage: 0, loading: 0, convergence: 0 },
     lastExport: ''
@@ -25,7 +28,7 @@
   function showError(msg) {
     const node = $('errorStatus');
     node.textContent = msg; node.hidden = !msg;
-    for (const id of ['jsonBtn', 'busCsvBtn', 'branchCsvBtn', 'convergenceCsvBtn', 'contCsvBtn']) $(id).disabled = !!msg;
+    for (const id of ['jsonBtn', 'busCsvBtn', 'branchCsvBtn', 'convergenceCsvBtn', 'contCsvBtn', 'auditJsonBtn', 'auditCsvBtn']) $(id).disabled = !!msg;
   }
 
   function loadPreset(name) {
@@ -58,6 +61,19 @@
     state.selectedBus = Math.min(state.selectedBus, state.network.buses.length - 1);
     state.selectedBranch = Math.min(state.selectedBranch, state.network.branches.length - 1);
     busSel.value = String(state.selectedBus); branchSel.value = String(state.selectedBranch);
+    // The DER host list holds PQ buses only: Volt-VAR support is meaningless
+    // on the slack (P,Q computed) and redundant on a PV bus (voltage held).
+    const derSel = $('derBus');
+    derSel.textContent = '';
+    const pqIdx = [];
+    state.network.buses.forEach((b, i) => {
+      if (b.type !== 'pq') return;
+      pqIdx.push(i);
+      const o = document.createElement('option'); o.value = String(i); o.textContent = `${b.id} (pq)`;
+      derSel.appendChild(o);
+    });
+    if (!pqIdx.includes(state.der.bus)) state.der.bus = pqIdx.length ? pqIdx[pqIdx.length - 1] : 0;
+    derSel.value = String(state.der.bus);
     syncEditor();
   }
 
@@ -79,6 +95,19 @@
     state.baseMVA = Number.isFinite(parsedBase) && parsedBase >= 1 ? parsedBase : 100;
     state.tolerance = Number($('tolerance').value);
     state.maxIter = Number($('maxIter').value);
+    state.der.enabled = $('derEnable').checked;
+    const parsedDerBus = Number($('derBus').value);
+    if (Number.isInteger(parsedDerBus) && parsedDerBus >= 0 && parsedDerBus < state.network.buses.length) state.der.bus = parsedDerBus;
+    state.der.pSolar = Number($('derSolar').value);
+    state.der.pBess = Number($('derBess').value);
+    state.der.qCap = Number($('derQCap').value);
+    state.der.qGain = Number($('derGain').value);
+    state.der.deadband = Number($('derDeadband').value);
+  }
+
+  function derSpec() {
+    const d = state.der;
+    return { bus: d.bus, pSolar: d.pSolar, pBess: d.pBess, qCap: d.qCap, qGain: d.qGain, deadband: d.deadband, vRef: d.vRef };
   }
 
   function effectiveNetwork() {
@@ -91,27 +120,49 @@
       readControls();
       const net = effectiveNetwork();
       net.baseMVA = state.baseMVA;
-      const solution = G.solveAC(net, { tolerance: state.tolerance, maxIter: state.maxIter });
+      let solution;
+      if (state.der.enabled) {
+        // The unassisted solve is kept alongside so the impact panel can
+        // quantify what the DER actually bought: voltage floor recovered,
+        // violations cleared, energy shaved.
+        state.baseSolution = G.solveAC(net, { tolerance: state.tolerance, maxIter: state.maxIter });
+        state.derResult = G.solveWithDER(net, derSpec(), { tolerance: state.tolerance, maxIter: state.maxIter });
+        solution = state.derResult.solution;
+      } else {
+        state.baseSolution = null;
+        state.derResult = null;
+        solution = G.solveAC(net, { tolerance: state.tolerance, maxIter: state.maxIter });
+      }
       state.network.baseMVA = state.baseMVA;
       state.solution = solution;
       state.diagnostics = G.diagnostics(solution);
       state.contingency = null;
+      state.scan = null;
+      state.previewBranch = null;
+      state.previewRow = null;
       syncLabels();
       redraw();
       updateDiagnostics();
       updateTables();
+      updateDERPanel();
       resetContingencyTable();
       showError('');
       const qNote = solution.qLimited && solution.qLimited.length
         ? ' | Q-limited: ' + solution.qLimited.map(q => q.id + '@' + q.bound).join(', ')
         : '';
+      const derNote = state.der.enabled && state.derResult
+        ? ` | DER @${state.derResult.busId}: +${fmt(state.der.pSolar + state.der.pBess, 2)} pu P, Q support ${fmt(state.derResult.qSupport, 3)} pu`
+        : '';
       $('statusLine').textContent = solution.converged
-        ? `${G.getPreset(state.preset).label} | load ${fmt(state.loadFactor, 2)}x | ${solution.network.buses.length} buses, ${solution.network.branches.length} branches | ${solution.iterations} Newton iterations | max mismatch ${solution.mismatch.toExponential(2)} pu${qNote}`
+        ? `${G.getPreset(state.preset).label} | load ${fmt(state.loadFactor, 2)}x | ${solution.network.buses.length} buses, ${solution.network.branches.length} branches | ${solution.iterations} Newton iterations | max mismatch ${solution.mismatch.toExponential(2)} pu${qNote}${derNote}`
         : `NON-CONVERGED: ${solution.reason} | last mismatch ${solution.mismatch.toExponential(2)} pu | charts and table show the last Newton iterate, not a valid operating point`;
       $('statusLine').classList.toggle('warn', !solution.converged);
       $('footerStatus').textContent = solution.converged ? 'Solved locally, no network requests' : 'Solve failed: ' + solution.reason;
     } catch (err) {
       state.solution = null; state.diagnostics = null; state.contingency = null;
+      state.scan = null; state.previewBranch = null; state.previewRow = null;
+      state.baseSolution = null; state.derResult = null;
+      updateDERPanel();
       for (const id of ['statIters', 'statMismatch', 'statGen', 'statLoad', 'statLoss', 'statBalance', 'statLoading']) $(id).textContent = '--';
       $('statSolver').textContent = 'ERROR'; $('statSolver').className = 'warn';
       resetContingencyTable();
@@ -129,6 +180,41 @@
     $('busLoadQOut').textContent = fmt(state.network.buses[state.selectedBus].qd, 2);
     $('branchXOut').textContent = fmt(state.network.branches[state.selectedBranch].x, 2);
     $('branchRateOut').textContent = String(state.network.branches[state.selectedBranch].rateMVA);
+    $('derSolarOut').textContent = fmt(state.der.pSolar, 2);
+    $('derBessOut').textContent = fmt(state.der.pBess, 2);
+    $('derQCapOut').textContent = fmt(state.der.qCap, 2);
+    $('derGainOut').textContent = fmt(state.der.qGain, 1);
+    $('derDeadbandOut').textContent = fmt(state.der.deadband, 3);
+  }
+
+  function updateDERPanel() {
+    const off = !state.der.enabled || !state.derResult;
+    for (const id of ['derVBefore', 'derVAfter', 'derVCleared', 'derQ', 'derMWh', 'derCO2']) {
+      $(id).textContent = '--'; $(id).className = '';
+    }
+    if (off) {
+      $('derReadout').textContent = state.der.enabled
+        ? 'DER enabled but the solve did not produce a usable state.'
+        : 'Enable DER to compute impact against the unassisted solve.';
+      return;
+    }
+    const r = state.derResult, base = state.baseSolution;
+    const imp = G.derImpact(base, r, { vLow: 0.95, vHigh: 1.05 });
+    $('derVBefore').textContent = imp.minVoltageBefore == null ? '--' : fmt(imp.minVoltageBefore, 4) + ' pu';
+    $('derVAfter').textContent = imp.minVoltageAfter == null ? '--' : fmt(imp.minVoltageAfter, 4) + ' pu';
+    $('derVAfter').className = imp.voltageRecovery != null && imp.voltageRecovery > 0 ? 'ok' : '';
+    const cleared = imp.violationsBefore != null && imp.violationsAfter != null ? imp.violationsBefore - imp.violationsAfter : null;
+    $('derVCleared').textContent = cleared == null ? '--' : String(cleared);
+    $('derVCleared').className = cleared != null && cleared > 0 ? 'ok' : '';
+    $('derQ').textContent = r.qEffective ? fmt(r.qSupport, 3) + ' pu' : '0 (PV bus)';
+    $('derMWh').textContent = fmt(imp.peakShavedMWh, 1) + ' MWh';
+    $('derCO2').textContent = fmt(imp.co2eDisplacedT, 1) + ' t';
+    const convNote = r.solution && r.solution.converged ? '' : ' | DER solve did not converge';
+    $('derReadout').textContent =
+      `DER @${r.busId}: solar ${fmt(state.der.pSolar, 2)} pu + battery ${fmt(state.der.pBess, 2)} pu discharge` +
+      ` | droop ${fmt(state.der.qGain, 1)} Q/V beyond +/-${fmt(state.der.deadband, 3)} pu, cap ${fmt(state.der.qCap, 2)} pu` +
+      ` | fixed-point ${r.settled ? 'settled in ' + r.iterations + ' solve(s)' : 'did not settle'}${convNote}` +
+      ` | estimates: ${fmt(imp.durationH, 0)} h peak window, ${fmt(imp.emissionTPerMWh, 2)} t/MWh`;
   }
 
   function updateDiagnostics() {
@@ -172,8 +258,9 @@
     const body = $('contTable').querySelector('tbody');
     body.textContent = '';
     const tr = document.createElement('tr'), td = document.createElement('td');
-    td.colSpan = 5; td.textContent = 'Press Run N-1 screen to compute'; tr.appendChild(td); body.appendChild(tr);
+    td.colSpan = 7; td.textContent = 'Press Run N-1 screen to compute'; tr.appendChild(td); body.appendChild(tr);
     $('contStatus').textContent = 'Not yet computed';
+    $('contPreview').textContent = '';
   }
 
   /* ---------------------------- Canvas drawing ---------------------------- */
@@ -322,26 +409,29 @@
     const n = s.network.buses.length, pts = busPositions(n);
     const grid = cssVar('--grid', '#26344f'), muted = cssVar('--muted', '#8296b4');
     const flows = d2 ? d2.flows : [];
+    const preview = state.previewBranch != null ? state.previewRow : null;
+    const previewBad = preview && preview.violatedBuses ? new Set(preview.violatedBuses) : new Set();
     // Branches first, then buses on top.
     s.network.branches.forEach((br, i) => {
       const p = pts[br.from], q = pts[br.to];
       const f = flows[i];
       const heavy = f && f.loading > 1;
+      const tripped = i === state.previewBranch;
       const line = add('line', {
         x1: p.x, y1: p.y, x2: q.x, y2: q.y,
-        stroke: !br.status ? grid : heavy ? cssVar('--warn', '#ffab7a') : (i === state.selectedBranch ? cssVar('--signal-b', '#ff87b2') : cssVar('--accent', '#62a6ff')),
-        'stroke-width': br.status ? (heavy ? 5 : 3) : 2,
-        'stroke-dasharray': br.status ? '' : '6,5',
-        opacity: br.status ? 1 : 0.55
+        stroke: tripped ? cssVar('--warn', '#ffab7a') : !br.status ? grid : heavy ? cssVar('--warn', '#ffab7a') : (i === state.selectedBranch ? cssVar('--signal-b', '#ff87b2') : cssVar('--accent', '#62a6ff')),
+        'stroke-width': tripped ? 6 : br.status ? (heavy ? 5 : 3) : 2,
+        'stroke-dasharray': tripped ? '4,4' : br.status ? '' : '6,5',
+        opacity: !br.status ? 0.55 : 1
       });
       line.addEventListener('click', () => { state.selectedBranch = i; $('branchSelect').value = String(i); syncEditor(); redraw(); });
       const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
-      const label = add('text', { x: mx, y: my - 6, 'text-anchor': 'middle', fill: muted, 'font-size': 10 });
-      label.textContent = br.id + (f && br.status ? ' ' + fmt(f.loading * 100, 0) + '%' : '');
+      const label = add('text', { x: mx, y: my - 6, 'text-anchor': 'middle', fill: tripped ? cssVar('--warn', '#ffab7a') : muted, 'font-size': 10, 'font-weight': tripped ? 700 : 400 });
+      label.textContent = br.id + (tripped ? ' OUT' : f && br.status ? ' ' + fmt(f.loading * 100, 0) + '%' : '');
     });
     s.network.buses.forEach((b, i) => {
       const p = pts[i];
-      const bad = s.vm[i] < b.vMin || s.vm[i] > b.vMax;
+      const bad = s.vm[i] < b.vMin || s.vm[i] > b.vMax || previewBad.has(b.id);
       const color = b.type === 'slack' ? cssVar('--fir', '#4ade80') : bad ? cssVar('--warn', '#ffab7a') : cssVar('--signal-a', '#62a6ff');
       add('circle', { cx: p.x, cy: p.y, r: 22, fill: cssVar('--surface-2', '#1b2740'), stroke: color, 'stroke-width': i === state.selectedBus ? 4 : 2 });
       const label = add('text', { x: p.x, y: p.y + 4, 'text-anchor': 'middle', fill: cssVar('--text', '#e8eefb'), 'font-size': 11, 'font-weight': 600 });
@@ -390,36 +480,132 @@
       download('gridflow_convergence.csv', G.exportConvergenceCSV(state.solution), 'text/csv');
     });
     $('contCsvBtn').addEventListener('click', () => {
-      if (!state.contingency) return;
-      const rows = [['outage', 'converged', 'reason', 'max_loading', 'overloads', 'voltage_violations', 'min_voltage']];
-      for (const r of state.contingency) {
-        rows.push([G.csvField(r.outage), String(r.converged), G.csvField(r.reason),
-          r.maxLoading == null ? '' : r.maxLoading.toFixed(6), String(r.overloaded ?? ''),
-          String(r.voltageViolations ?? ''), r.minVoltage == null ? '' : r.minVoltage.toFixed(6)]);
+      if (!state.scan) return;
+      download('gridflow_n1.csv', G.exportContingencyCSV(state.scan), 'text/csv');
+    });
+    $('auditJsonBtn').addEventListener('click', () => {
+      if (!state.solution) return;
+      const text = G.exportAuditJSON({
+        solution: state.solution, scan: state.scan, derResult: state.derResult,
+        preset: state.preset, loadFactor: state.loadFactor
+      });
+      download('gridflow-ac-audit.json', text, 'application/json');
+      const sums = G.buildAudit({ solution: state.solution, scan: state.scan, derResult: state.derResult, preset: state.preset, loadFactor: state.loadFactor }).checksums;
+      $('auditNote').textContent = `gridflow-ac-audit.json | fnv1a64 ${sums.fnv1a64} | sha256 ${sums.sha256.slice(0, 24)}...`;
+    });
+    $('auditCsvBtn').addEventListener('click', () => {
+      if (!state.scan) return;
+      download('gridflow-ac-n1-audit.csv', G.exportContingencyCSV(state.scan), 'text/csv');
+      $('auditNote').textContent = 'N-1 audit CSV generated locally (ranked, with violated buses and overloaded branches).';
+    });
+    $('selfTestBtn').addEventListener('click', () => {
+      const list = $('selfTestList');
+      try {
+        const results = G.selfTestSuite();
+        state.selfTests = results;
+        list.textContent = '';
+        list.hidden = false;
+        for (const t of results) {
+          const li = document.createElement('li');
+          const mark = document.createElement('span');
+          mark.className = 'selftest-mark ' + (t.pass ? 'pass' : 'fail');
+          mark.textContent = t.pass ? 'PASS' : 'FAIL';
+          li.appendChild(mark);
+          li.appendChild(document.createTextNode(` ${t.name}: ${t.detail}`));
+          list.appendChild(li);
+        }
+        const passed = results.filter(t => t.pass).length;
+        $('auditNote').textContent = `${passed}/${results.length} self-tests passed | Kirchhoff balance, N-1 determinism, Volt-VAR, checksums, collapse honesty, overloads`;
+      } catch (err) {
+        state.selfTests = null;
+        $('auditNote').textContent = 'Self-tests failed to run: ' + err.message;
       }
-      download('gridflow_n1.csv', rows.join('\n') + '\n', 'text/csv');
     });
   }
 
-  /* ------------------------------ Contingency ----------------------------- */
+  /* --------------------------- N-1 security scanner ----------------------- */
+  const SORT_KEYS = {
+    rank: r => r.rank, outage: r => r.outage, converged: r => (r.converged ? 1 : 0),
+    maxLoading: r => (r.maxLoading == null ? -1 : r.maxLoading),
+    overloaded: r => (r.overloaded == null ? -1 : r.overloaded),
+    voltageViolations: r => (r.voltageViolations == null ? -1 : r.voltageViolations),
+    severity: r => r.severity
+  };
+
+  function sortedScanRows() {
+    const key = SORT_KEYS[state.sortKey] ? state.sortKey : 'rank';
+    const rows = state.scan ? state.scan.results.slice() : [];
+    const dir = state.sortDir === 'desc' ? -1 : 1;
+    rows.sort((a, b) => {
+      const va = SORT_KEYS[key](a), vb = SORT_KEYS[key](b);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return a.outage < b.outage ? -1 : a.outage > b.outage ? 1 : 0;
+    });
+    return rows;
+  }
+
+  function renderScanTable() {
+    const body = $('contTable').querySelector('tbody');
+    body.textContent = '';
+    for (const r of sortedScanRows()) {
+      const tr = document.createElement('tr');
+      tr.classList.toggle('row-fail', !r.converged);
+      tr.classList.toggle('row-crit', r.rank === 1 && r.severity > 0);
+      tr.classList.toggle('row-preview', state.previewBranch === r.branchIndex);
+      const vals = [
+        String(r.rank), r.outage, r.converged ? 'yes' : 'NO',
+        r.maxLoading == null ? '--' : fmt(r.maxLoading * 100, 1) + '%',
+        String(r.overloaded ?? '--'), String(r.voltageViolations ?? '--'),
+        fmt(r.severity, 1)
+      ];
+      for (const v of vals) { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); }
+      tr.addEventListener('click', () => {
+        // Clicking a row previews that exact outage on the one-line diagram;
+        // clicking it again clears the preview.
+        if (state.previewBranch === r.branchIndex) {
+          state.previewBranch = null; state.previewRow = null;
+          $('contPreview').textContent = '';
+        } else {
+          state.previewBranch = r.branchIndex; state.previewRow = r;
+          $('contPreview').textContent = `Preview: ${r.outage} out of service | ` +
+            (r.converged
+              ? `min |V| ${fmt(r.minVoltage, 4)} pu${r.violatedBuses.length ? ' | violated: ' + r.violatedBuses.join(', ') : ''}` +
+                `${r.overloadedBranches.length ? ' | overloaded: ' + r.overloadedBranches.join(', ') : ''} | severity ${fmt(r.severity, 1)}`
+              : `solve failed (${r.reason}) | severity ${fmt(r.severity, 1)}`) +
+            ` | rank ${r.rank} of ${state.scan.results.length}`;
+        }
+        renderScanTable(); redraw();
+      });
+      body.appendChild(tr);
+    }
+    for (const btn of $('contTable').querySelectorAll('thead .th-sort')) {
+      btn.setAttribute('aria-sort', btn.getAttribute('data-key') === state.sortKey ? state.sortDir : 'none');
+      btn.classList.toggle('sorted', btn.getAttribute('data-key') === state.sortKey);
+    }
+  }
+
   function runContingency() {
     try {
-      const body = $('contTable').querySelector('tbody');
-      body.textContent = '';
-      const results = G.contingencyAnalysis(effectiveNetwork(), { tolerance: state.tolerance, maxIter: state.maxIter });
-      state.contingency = results;
-      for (const r of results) {
-        const tr = document.createElement('tr');
-        const vals = [r.outage, r.converged ? 'yes' : 'NO', r.maxLoading == null ? '--' : fmt(r.maxLoading * 100, 1) + '%',
-          String(r.overloaded ?? '--'), String(r.voltageViolations ?? '--')];
-        for (const v of vals) { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); }
-        body.appendChild(tr);
-      }
-      const failures = results.filter(r => !r.converged).length;
-      const overloaded = results.filter(r => r.overloaded > 0).length;
-      $('contStatus').textContent = `${results.length} outages screened | ${failures} did not converge | ${overloaded} produce overloads | each row is a full AC re-solve`;
+      const net = effectiveNetwork();
+      net.baseMVA = state.baseMVA;
+      const scan = G.securityScan(net, {
+        tolerance: state.tolerance, maxIter: state.maxIter,
+        der: state.der.enabled ? derSpec() : null
+      });
+      state.scan = scan;
+      state.contingency = scan.results;
+      state.previewBranch = null; state.previewRow = null;
+      $('contPreview').textContent = '';
+      renderScanTable();
+      const band = `band ${fmt(scan.band.low, 2)}-${fmt(scan.band.high, 2)} pu`;
+      $('contStatus').textContent =
+        `${scan.screened} outages screened | ${scan.nonConverged} did not converge | ${scan.withOverloads} produce overloads | ` +
+        `${scan.withVoltageViolations} violate ${band} | ` +
+        (scan.secure ? 'grid is N-1 secure' : `critical: ${scan.critical}`) +
+        (state.der.enabled ? ' | DER active' : '');
     } catch (err) {
-      state.contingency = null;
+      state.contingency = null; state.scan = null;
       $('contStatus').textContent = 'N-1 screen failed: ' + err.message;
     }
   }
@@ -453,6 +639,21 @@
     $('branchStatus').addEventListener('change', ev => {
       state.network.branches[state.selectedBranch].status = ev.target.checked ? 1 : 0; markCustom(); recompute();
     });
+    $('derEnable').addEventListener('change', recompute);
+    $('derBus').addEventListener('change', recompute);
+    const derEdit = () => { readControls(); if (state.der.enabled) recompute(); else syncLabels(); };
+    for (const id of ['derSolar', 'derBess', 'derQCap', 'derGain', 'derDeadband']) {
+      $(id).addEventListener('input', derEdit);
+      $(id).addEventListener('change', derEdit);
+    }
+    for (const btn of $('contTable').querySelectorAll('thead .th-sort')) {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-key');
+        if (state.sortKey === key) state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+        else { state.sortKey = key; state.sortDir = key === 'outage' || key === 'converged' ? 'asc' : 'desc'; }
+        if (state.scan) renderScanTable();
+      });
+    }
     $('resetBtn').addEventListener('click', () => { $('presetSelect').value = state.preset; loadPreset(state.preset); });
     $('contBtn').addEventListener('click', runContingency);
     $('themeToggle').addEventListener('click', () => {
@@ -509,7 +710,9 @@
       get state() { return state; },
       get solution() { return state.solution; },
       get diagnostics() { return state.diagnostics; },
-      recompute, redraw, runContingency
+      get scan() { return state.scan; },
+      get derResult() { return state.derResult; },
+      recompute, redraw, runContingency, renderScanTable
     };
   }
 

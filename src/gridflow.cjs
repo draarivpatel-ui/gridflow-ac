@@ -791,9 +791,497 @@
     }, null, 2);
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* N-1 security scanner                                                    */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Full N-1 security assessment. Every in-service branch is tripped in
+   * turn and the network re-solved with the damped Newton-Raphson solver.
+   * Each contingency is scored for bus voltage violations against a fixed
+   * secure band (default 0.95 to 1.05 pu), thermal overloads against the
+   * branch MVA rating, and honest non-convergence (voltage collapse or
+   * islanding). Results carry a deterministic severity and a rank so the
+   * worst single points of failure sort to the top.
+   *
+   * options: {vLow, vHigh, tolerance, maxIter, enforceQLimits, der}
+   * When options.der is set, each contingency is re-solved through
+   * solveWithDER so the scanner measures the post-DER secure state.
+   */
+  function securityScan(rawNetwork, options) {
+    var opts = options || {};
+    var vLow = isFiniteNumber(opts.vLow) ? opts.vLow : 0.95;
+    var vHigh = isFiniteNumber(opts.vHigh) ? opts.vHigh : 1.05;
+    if (!(vLow < vHigh)) throw new RangeError('security band requires vLow < vHigh');
+    var solverOpts = { tolerance: opts.tolerance, maxIter: opts.maxIter, enforceQLimits: opts.enforceQLimits };
+    var network = normalizeNetwork(rawNetwork);
+    var results = [];
+    for (var k = 0; k < network.branches.length; k++) {
+      if (isOutOfService(network.branches[k])) continue;
+      var copy = {
+        buses: network.buses.map(function (b) { return Object.assign({}, b); }),
+        branches: network.branches.map(function (b) { return Object.assign({}, b); }),
+        baseMVA: network.baseMVA
+      };
+      copy.branches[k].status = 0;
+      var sol = opts.der ? solveWithDER(copy, opts.der, solverOpts).solution : solveAC(copy, solverOpts);
+      var d = sol.converged ? diagnostics(sol) : null;
+      var violated = [], overloadedBranches = [], maxLoading = 0, minV = null, maxV = null;
+      if (d) {
+        maxLoading = d.maxLoading;
+        minV = d.minVoltage; maxV = d.maxVoltage;
+        for (var i = 0; i < sol.network.buses.length; i++) {
+          if (sol.vm[i] < vLow || sol.vm[i] > vHigh) violated.push(sol.network.buses[i].id);
+        }
+        for (var f = 0; f < d.flows.length; f++) {
+          if (d.flows[f].status && d.flows[f].loading > 1) overloadedBranches.push(d.flows[f].id);
+        }
+      }
+      /* Deterministic severity: collapse dominates, then each overload and
+         each violated bus adds, scaled by how far the worst excursion sits
+         outside the secure band. Ties fall back to the branch id below. */
+      var severity = sol.converged
+        ? overloadedBranches.length * 40 + Math.max(0, maxLoading - 1) * 200
+          + violated.length * 30
+          + Math.max(0, vLow - minV) * 400 + Math.max(0, maxV - vHigh) * 400
+        : 1000;
+      results.push({
+        outage: network.branches[k].id, branchIndex: k,
+        converged: sol.converged, reason: sol.reason,
+        severity: severity, rank: 0,
+        maxLoading: d ? maxLoading : null,
+        overloaded: d ? overloadedBranches.length : null,
+        overloadedBranches: overloadedBranches,
+        voltageViolations: d ? violated.length : null,
+        violatedBuses: violated,
+        minVoltage: minV, maxVoltage: maxV,
+        iterations: sol.iterations
+      });
+    }
+    /* Deterministic total order: severity descending, outage id ascending.
+       The rank is assigned on the sorted copy and written back onto the
+       branch-order result rows. */
+    var ranked = results.slice().sort(function (a, b) {
+      if (b.severity !== a.severity) return b.severity - a.severity;
+      return a.outage < b.outage ? -1 : a.outage > b.outage ? 1 : 0;
+    });
+    for (var r = 0; r < ranked.length; r++) ranked[r].rank = r + 1;
+    var secure = results.every(function (x) {
+      return x.converged && x.voltageViolations === 0 && x.overloaded === 0;
+    });
+    return {
+      band: { low: vLow, high: vHigh },
+      screened: results.length,
+      nonConverged: results.filter(function (x) { return !x.converged; }).length,
+      withOverloads: results.filter(function (x) { return x.overloaded > 0; }).length,
+      withVoltageViolations: results.filter(function (x) { return x.voltageViolations > 0; }).length,
+      secure: secure,
+      critical: ranked.length ? ranked[0].outage : null,
+      results: results, ranked: ranked
+    };
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Solar PV + BESS Volt-VAR support                                        */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Validate and normalize a distributed energy resource spec.
+   * der: {bus, pSolar, pBess, qCap, vRef, deadband, qGain}
+   *   bus: index of the host bus. P support is added to any non-slack bus;
+   *   inverter Volt-VAR Q support only acts on PQ buses, where the scheduled
+   *   reactive injection is a real degree of freedom.
+   *   pSolar / pBess: real injection added at the bus in pu (pBess > 0 is
+   *   battery discharge, pBess < 0 is charging).
+   *   qCap: inverter apparent reactive headroom in pu (symmetric limit).
+   *   vRef, deadband, qGain: Volt-VAR droop curve parameters. Within
+   *   vRef +/- deadband the inverter holds Q at zero; outside, Q grows
+   *   linearly with the deviation at qGain pu per pu and saturates at qCap.
+   */
+  function normalizeDER(raw) {
+    if (!raw || typeof raw !== 'object') throw new RangeError('der spec required');
+    var num = function (v, fb) { return Number(v == null ? fb : v); };
+    var der = {
+      bus: Number(raw.bus),
+      pSolar: num(raw.pSolar, 0), pBess: num(raw.pBess, 0),
+      qCap: num(raw.qCap, 0.5),
+      vRef: num(raw.vRef, 1.0),
+      deadband: num(raw.deadband, 0.005),
+      qGain: num(raw.qGain, 6)
+    };
+    if (!Number.isInteger(der.bus) || der.bus < 0) throw new RangeError('der bus must be a nonnegative index');
+    for (var key of ['pSolar', 'pBess', 'qCap', 'vRef', 'deadband', 'qGain']) {
+      if (!isFiniteNumber(der[key])) throw new RangeError('nonfinite der ' + key);
+    }
+    if (der.qCap < 0) throw new RangeError('der qCap must be nonnegative');
+    if (der.deadband < 0) throw new RangeError('der deadband must be nonnegative');
+    if (der.qGain < 0) throw new RangeError('der qGain must be nonnegative');
+    if (der.vRef <= 0) throw new RangeError('der vRef must be positive');
+    return der;
+  }
+
+  /** IEEE-1547-style Volt-VAR droop: zero inside the deadband, linear outside. */
+  function droopQ(v, der) {
+    var dv = v - der.vRef;
+    if (Math.abs(dv) <= der.deadband + 1e-12) return 0;
+    var q = -der.qGain * (dv - (dv > 0 ? der.deadband : -der.deadband));
+    return Math.abs(q) < 1e-12 ? 0 : clamp(q, -der.qCap, der.qCap);
+  }
+
+  /**
+   * Solve the AC flow with a Solar PV + battery resource on one bus.
+   * Real injection is added directly to the host bus schedule. Reactive
+   * support is implicit: the droop law depends on the solved voltage, which
+   * in turn depends on the injected Q. The equilibrium satisfies
+   * h(q) = droopQ(v(q)) - q = 0. Because the droop is non-increasing in v
+   * and v is non-decreasing in the capacitive Q applied, h is strictly
+   * decreasing in q, so a deterministic bisection on [-qCap, +qCap] finds
+   * the unique fixed point where a naive Q-chasing iteration would
+   * oscillate around the steep droop slope.
+   */
+  function solveWithDER(rawNetwork, derRaw, options) {
+    var network = normalizeNetwork(rawNetwork);
+    var der = normalizeDER(derRaw);
+    var n = network.buses.length;
+    if (der.bus >= n) throw new RangeError('der bus index ' + der.bus + ' out of range');
+    var bus = network.buses[der.bus];
+    if (bus.type === 'slack') throw new RangeError('der cannot sit on the slack bus');
+    var basePg = bus.pg, baseQg = bus.qg;
+    bus.pg = basePg + der.pSolar + der.pBess;
+    var qCapable = bus.type === 'pq';
+    var responses = [];
+    var solveAt = function (q) {
+      if (qCapable) bus.qg = baseQg + q;
+      var s = solveAC(network, options);
+      responses.push({ iteration: responses.length + 1, voltage: s.vm[der.bus], qApplied: q, converged: s.converged });
+      return s;
+    };
+    var sol = solveAt(0), appliedQ = 0, settled = false;
+    if (sol.converged && qCapable) {
+      var h = function (qq, s) { return droopQ(s.vm[der.bus], der) - qq; };
+      var h0 = h(0, sol);
+      if (Math.abs(h0) < 1e-7) settled = true;
+      else {
+        var lo = -der.qCap, hi = der.qCap;
+        for (var it = 0; it < 32; it++) {
+          var mid = (lo + hi) / 2;
+          var sMid = solveAt(mid);
+          sol = sMid; appliedQ = mid;
+          if (!sMid.converged) break;
+          var hm = h(mid, sMid);
+          if (Math.abs(hm) < 1e-7 || (hi - lo) < 1e-9) { settled = true; break; }
+          if (hm > 0) lo = mid; else hi = mid;
+        }
+      }
+    } else if (sol.converged) settled = true;
+    bus.qg = baseQg; bus.pg = basePg;
+    if (!qCapable) appliedQ = 0;
+    return {
+      solution: sol, der: der, busId: bus.id,
+      qSupport: appliedQ, qEffective: qCapable,
+      settled: settled, responses: responses, iterations: responses.length
+    };
+  }
+
+  /**
+   * Compare a base-case solve with a DER-assisted solve.
+   * metrics: voltage floor recovery, band violations and overloads removed,
+   * loss change, plus labeled energy estimates: peakShavedMWh = injected
+   * power sustained for meta.durationH hours (default 4), co2eDisplacedT =
+   * peakShavedMWh * meta.emissionTPerMWh (default 0.4 t per MWh). These are
+   * scenario estimates, not metered quantities.
+   */
+  function derImpact(baseSolution, derResult, meta) {
+    var m = meta || {};
+    var durationH = isFiniteNumber(m.durationH) && m.durationH >= 0 ? m.durationH : 4;
+    var ef = isFiniteNumber(m.emissionTPerMWh) && m.emissionTPerMWh >= 0 ? m.emissionTPerMWh : 0.4;
+    var vLow = isFiniteNumber(m.vLow) ? m.vLow : 0.95;
+    var vHigh = isFiniteNumber(m.vHigh) ? m.vHigh : 1.05;
+    var countViol = function (sol) {
+      if (!sol || !sol.converged) return null;
+      var c = 0;
+      for (var i = 0; i < sol.vm.length; i++) if (sol.vm[i] < vLow || sol.vm[i] > vHigh) c++;
+      return c;
+    };
+    var sol = derResult ? derResult.solution : null;
+    var bd = baseSolution && baseSolution.converged ? diagnostics(baseSolution) : null;
+    var ad = sol && sol.converged ? diagnostics(sol) : null;
+    var minBefore = bd ? bd.minVoltage : (baseSolution ? Math.min.apply(null, Array.from(baseSolution.vm)) : null);
+    var minAfter = ad ? ad.minVoltage : (sol ? Math.min.apply(null, Array.from(sol.vm)) : null);
+    var injected = derResult ? Math.max(0, derResult.der.pSolar + derResult.der.pBess) : 0;
+    var peakMW = injected;
+    return {
+      converged: !!(sol && sol.converged),
+      minVoltageBefore: minBefore, minVoltageAfter: minAfter,
+      voltageRecovery: minBefore != null && minAfter != null ? minAfter - minBefore : null,
+      violationsBefore: countViol(baseSolution), violationsAfter: countViol(sol),
+      overloadsBefore: bd ? bd.overloaded.length : null,
+      overloadsAfter: ad ? ad.overloaded.length : null,
+      lossChange: bd && ad ? ad.totalLoss - bd.totalLoss : null,
+      qSupport: derResult ? derResult.qSupport : 0,
+      injectedPowerMW: peakMW * ((derResult && derResult.solution ? derResult.solution.network.baseMVA : 100)),
+      peakShavedMWh: peakMW * ((derResult && derResult.solution ? derResult.solution.network.baseMVA : 100)) * durationH,
+      co2eDisplacedT: peakMW * ((derResult && derResult.solution ? derResult.solution.network.baseMVA : 100)) * durationH * ef,
+      durationH: durationH, emissionTPerMWh: ef
+    };
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Deterministic checksums                                                 */
+  /* ---------------------------------------------------------------------- */
+
+  /** UTF-8 encode a JS string into a byte array (BMP + surrogate pairs). */
+  function utf8Bytes(str) {
+    var out = [];
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      if (c < 0x80) out.push(c);
+      else if (c < 0x800) { out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f)); }
+      else if (c >= 0xd800 && c <= 0xdbff) {
+        var c2 = i + 1 < str.length ? str.charCodeAt(i + 1) : 0;
+        if (c2 >= 0xdc00 && c2 <= 0xdfff) {
+          var cp = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);
+          out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+          i++;
+        } else out.push(0xef, 0xbf, 0xbd);
+      } else if (c >= 0xdc00 && c <= 0xdfff) out.push(0xef, 0xbf, 0xbd);
+      else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+    }
+    return out;
+  }
+
+  /** FNV-1a 64-bit hash of a string, as 16 lowercase hex characters. */
+  function fnv1a64(str) {
+    var bytes = utf8Bytes(str);
+    var h = 0xcbf29ce484222325n;
+    var prime = 0x100000001b3n, mask = 0xffffffffffffffffn;
+    for (var i = 0; i < bytes.length; i++) {
+      h ^= BigInt(bytes[i]);
+      h = (h * prime) & mask;
+    }
+    var s = h.toString(16);
+    return '0000000000000000'.slice(s.length) + s;
+  }
+
+  /**
+   * SHA-256 of a string as 64 lowercase hex characters. Pure arithmetic
+   * implementation so the audit digest is identical in Node and in the
+   * browser, with no async dependency and no external library.
+   */
+  function sha256(str) {
+    var K = [
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+    var bytes = utf8Bytes(str);
+    var bitLen = bytes.length * 8;
+    bytes.push(0x80);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    var hi = Math.floor(bitLen / 0x100000000), lo = bitLen >>> 0;
+    for (var q = 3; q >= 0; q--) bytes.push((hi >>> (q * 8)) & 0xff);
+    for (var q2 = 3; q2 >= 0; q2--) bytes.push((lo >>> (q2 * 8)) & 0xff);
+    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var w = new Int32Array(64);
+    var rotr = function (x, n) { return ((x >>> n) | (x << (32 - n))) >>> 0; };
+    for (var off = 0; off < bytes.length; off += 64) {
+      for (var t = 0; t < 16; t++) {
+        w[t] = ((bytes[off + t * 4] << 24) | (bytes[off + t * 4 + 1] << 16) |
+          (bytes[off + t * 4 + 2] << 8) | bytes[off + t * 4 + 3]) | 0;
+      }
+      for (var t2 = 16; t2 < 64; t2++) {
+        var s0 = (rotr(w[t2 - 15], 7) ^ rotr(w[t2 - 15], 18) ^ (w[t2 - 15] >>> 3)) >>> 0;
+        var s1 = (rotr(w[t2 - 2], 17) ^ rotr(w[t2 - 2], 19) ^ (w[t2 - 2] >>> 10)) >>> 0;
+        w[t2] = (w[t2 - 16] + s0 + w[t2 - 7] + s1) | 0;
+      }
+      var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], hh = H[7];
+      for (var t3 = 0; t3 < 64; t3++) {
+        var S1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) >>> 0;
+        var ch = ((e & f) ^ (~e & g)) >>> 0;
+        var t1 = (hh + S1 + ch + K[t3] + w[t3]) | 0;
+        var S0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) >>> 0;
+        var maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+        var t2v = (S0 + maj) | 0;
+        hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2v) | 0;
+      }
+      H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+      H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + hh) | 0;
+    }
+    var out = '';
+    for (var z = 0; z < 8; z++) {
+      var hs = (H[z] >>> 0).toString(16);
+      out += '00000000'.slice(hs.length) + hs;
+    }
+    return out;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Audit export and self tests                                             */
+  /* ---------------------------------------------------------------------- */
+
+  /** Ranked N-1 CSV from a securityScan result (or its results array). */
+  function exportContingencyCSV(scan) {
+    var results = Array.isArray(scan) ? scan : (scan && scan.ranked) || [];
+    var rows = [['outage', 'rank', 'severity', 'converged', 'reason', 'max_loading_fraction',
+      'overloaded_branches', 'voltage_violation_buses', 'min_voltage_pu', 'max_voltage_pu', 'iterations']];
+    for (var r of results) {
+      rows.push([r.outage, r.rank || '', numFixed(r.severity, 3), String(r.converged),
+        r.reason || '', numFixed(r.maxLoading, 6),
+        (r.overloadedBranches || []).join('|'), (r.violatedBuses || []).join('|'),
+        numFixed(r.minVoltage, 6), numFixed(r.maxVoltage, 6), r.iterations == null ? '' : r.iterations]);
+    }
+    return rows.map(function (row) { return row.map(csvField).join(','); }).join('\n') + '\n';
+  }
+
+  /**
+   * Build the deterministic audit report. The checksum covers the report
+   * body only, so the same network state always produces the same digests;
+   * no timestamps or random ids are included.
+   */
+  function buildAudit(input) {
+    var sol = input.solution || null;
+    var scan = input.scan || null;
+    var der = input.derResult || null;
+    var d = sol && sol.converged ? diagnostics(sol) : null;
+    var body = {
+      schemaVersion: 1,
+      generator: 'gridflow-ac',
+      kind: 'n1-security-audit',
+      note: 'Synthetic benchmark network. Deterministic report: identical input state yields identical checksums.',
+      preset: input.preset || 'custom',
+      loadFactor: isFiniteNumber(input.loadFactor) ? input.loadFactor : 1,
+      baseMVA: sol ? sol.network.baseMVA : (input.baseMVA || 100),
+      operatingPoint: {
+        converged: sol ? sol.converged : false,
+        reason: sol ? sol.reason : 'no solution',
+        iterations: sol ? sol.iterations : 0,
+        mismatch: sol && isFiniteNumber(sol.mismatch) ? sol.mismatch : null,
+        totalGeneration: d ? d.totalGeneration : null,
+        totalLoad: d ? d.totalLoad : null,
+        totalLoss: d ? d.totalLoss : null,
+        balanceError: d ? d.balanceError : null,
+        minVoltage: d ? d.minVoltage : null,
+        maxVoltage: d ? d.maxVoltage : null,
+        maxLoading: d ? d.maxLoading : null,
+        overloaded: d ? d.overloaded : [],
+        voltageViolations: d ? d.voltageViolations : []
+      },
+      buses: d ? sol.network.buses.map(function (b, i) {
+        return { id: b.id, type: b.type, vm: sol.vm[i], va: sol.va[i],
+          pd: b.pd, qd: b.qd, pg: b.type === 'slack' ? sol.slackGeneration.p : b.pg, qg: sol.qGeneration[i] };
+      }) : [],
+      branches: d ? d.flows.map(function (f) {
+        return { id: f.id, from: f.from, to: f.to, status: f.status, pFrom: f.pFrom, qFrom: f.qFrom,
+          pTo: f.pTo, qTo: f.qTo, lossP: f.lossP, loading: f.loading };
+      }) : [],
+      security: scan ? {
+        band: scan.band, screened: scan.screened, nonConverged: scan.nonConverged,
+        withOverloads: scan.withOverloads, withVoltageViolations: scan.withVoltageViolations,
+        secure: scan.secure, critical: scan.critical,
+        results: scan.ranked.map(function (r) {
+          return { outage: r.outage, rank: r.rank, severity: r.severity, converged: r.converged,
+            reason: r.reason, maxLoading: r.maxLoading, overloadedBranches: r.overloadedBranches,
+            violatedBuses: r.violatedBuses, minVoltage: r.minVoltage, maxVoltage: r.maxVoltage };
+        })
+      } : null,
+      der: der ? {
+        bus: der.der.bus, busId: der.busId, pSolar: der.der.pSolar, pBess: der.der.pBess,
+        qCap: der.der.qCap, vRef: der.der.vRef, deadband: der.der.deadband, qGain: der.der.qGain,
+        qSupport: der.qSupport, qEffective: der.qEffective, settled: der.settled
+      } : null
+    };
+    var payload = JSON.stringify(body);
+    body.checksums = {
+      algorithm: 'fnv1a-64,sha256',
+      payload: 'compact-json',
+      fnv1a64: fnv1a64(payload),
+      sha256: sha256(payload)
+    };
+    return body;
+  }
+
+  /** Serialize the audit report to JSON. */
+  function exportAuditJSON(input) {
+    return JSON.stringify(buildAudit(input), null, 2) + '\n';
+  }
+
+  /**
+   * In-page verification battery. Each check exercises a real solver path
+   * and reports a pass flag with a numeric detail. Deterministic: identical
+   * engine build yields identical results on every run.
+   */
+  function selfTestSuite() {
+    var out = [];
+    // 1. Kirchhoff power balance on the meshed benchmark.
+    var s = solveAC(getPreset('ieee5'));
+    var d = s.converged ? diagnostics(s) : null;
+    out.push({
+      id: 'balance', name: 'Kirchhoff power balance',
+      pass: !!(d && Math.abs(d.balanceError) < 1e-6),
+      detail: d ? 'sum(Pgen) - sum(Pload) - Ploss = ' + d.balanceError.toExponential(2) + ' pu' : 'solve failed'
+    });
+    // 2. N-1 ranking determinism: two identical scans, identical ordering.
+    var scanA = securityScan(getPreset('ieee5')), scanB = securityScan(getPreset('ieee5'));
+    var sig = function (sc) { return sc.ranked.map(function (r) { return r.outage + '#' + r.rank; }).join(','); };
+    out.push({
+      id: 'n1-determinism', name: 'N-1 ranking determinism',
+      pass: sig(scanA) === sig(scanB),
+      detail: 'order ' + sig(scanA)
+    });
+    // 3. Volt-VAR droop stabilization on a sagging radial feeder.
+    var sagNet = scaleLoad(getPreset('radial'), 1.3);
+    var sag = solveAC(sagNet);
+    var sagD = sag.converged ? diagnostics(sag) : null;
+    var weak = 0, weakV = Infinity;
+    if (sag.converged) {
+      for (var wi = 0; wi < sag.network.buses.length; wi++) {
+        if (sag.network.buses[wi].type === 'pq' && sag.vm[wi] < weakV) { weakV = sag.vm[wi]; weak = wi; }
+      }
+    }
+    var fixed = sag.converged ? solveWithDER(sagNet, { bus: weak, pSolar: 0.1, pBess: 0.15, qCap: 0.6, qGain: 8, deadband: 0.005 }) : null;
+    var fixedV = fixed && fixed.solution.converged ? Math.min.apply(null, Array.from(fixed.solution.vm)) : weakV;
+    out.push({
+      id: 'volt-var', name: 'Volt-VAR droop stabilization',
+      pass: !!(fixed && fixed.solution.converged && fixedV > weakV + 1e-4),
+      detail: 'min |V| ' + weakV.toFixed(4) + ' -> ' + fixedV.toFixed(4) + ' pu at ' + (sag.converged ? sag.network.buses[weak].id : '?')
+    });
+    // 4. Checksum vectors must match the published SHA-256 digests.
+    var vec = sha256('') === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' &&
+      sha256('abc') === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+    out.push({
+      id: 'checksum', name: 'Checksum correctness',
+      pass: vec, detail: 'sha256(abc) = ' + sha256('abc').slice(0, 16) + '...'
+    });
+    // 5. N-1 honesty: a radial outage must be flagged non-convergent, never smoothed over.
+    var radScan = securityScan(getPreset('radial'));
+    var radBad = radScan.results.filter(function (r) { return !r.converged; }).length;
+    out.push({
+      id: 'n1-honesty', name: 'N-1 collapse honesty',
+      pass: radBad >= 1 && radScan.nonConverged === radBad,
+      detail: radBad + ' of ' + radScan.screened + ' radial outages fail to converge'
+    });
+    // 6. Overload detection on the stressed benchmark.
+    var stress = solveAC(getPreset('stress'));
+    var sd = stress.converged ? diagnostics(stress) : null;
+    out.push({
+      id: 'overload', name: 'Thermal overload detection',
+      pass: !!(sd && sd.maxLoading > 1 && sd.overloaded.length >= 1),
+      detail: sd ? 'max loading ' + (sd.maxLoading * 100).toFixed(1) + '% on ' + sd.overloaded.join(',') : 'solve failed'
+    });
+    return out;
+  }
+
   var api = {
     BUS_TYPES: BUS_TYPES, PRESETS: PRESETS,
     presetNames: presetNames, getPreset: getPreset, scaleLoad: scaleLoad,
+    normalizeDER: normalizeDER, droopQ: droopQ, solveWithDER: solveWithDER, derImpact: derImpact,
+    securityScan: securityScan, fnv1a64: fnv1a64, sha256: sha256, utf8Bytes: utf8Bytes,
+    exportContingencyCSV: exportContingencyCSV, buildAudit: buildAudit,
+    exportAuditJSON: exportAuditJSON, selfTestSuite: selfTestSuite,
     normalizeNetwork: normalizeNetwork, buildYbus: buildYbus,
     scheduledInjection: scheduledInjection, calculateInjections: calculateInjections,
     solveAC: solveAC, solveDC: solveDC, branchFlows: branchFlows,

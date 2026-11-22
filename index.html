@@ -110,9 +110,44 @@
         <label class="check-row"><input id="branchStatus" type="checkbox" checked> Branch in service</label>
       </div>
 
+      <div class="control-block">
+        <h3>Solar PV + battery storage</h3>
+        <label class="check-row"><input id="derEnable" type="checkbox"> Enable DER on a load bus</label>
+        <div class="control-row">
+          <label for="derBus">Host bus (PQ)</label>
+          <select id="derBus"></select>
+        </div>
+        <div class="control-row">
+          <label for="derSolar">Solar PV output (pu)</label>
+          <input id="derSolar" type="range" min="0" max="1.5" step="0.05" value="0.2">
+          <output id="derSolarOut" for="derSolar">0.20</output>
+        </div>
+        <div class="control-row">
+          <label for="derBess">Battery discharge (pu)</label>
+          <input id="derBess" type="range" min="-1" max="1" step="0.05" value="0.3">
+          <output id="derBessOut" for="derBess">0.30</output>
+        </div>
+        <div class="control-row">
+          <label for="derQCap">Inverter Q capacity (pu)</label>
+          <input id="derQCap" type="range" min="0" max="1" step="0.05" value="0.5">
+          <output id="derQCapOut" for="derQCap">0.50</output>
+        </div>
+        <div class="control-row">
+          <label for="derGain">Volt-VAR droop gain</label>
+          <input id="derGain" type="range" min="0" max="20" step="0.5" value="8">
+          <output id="derGainOut" for="derGain">8</output>
+        </div>
+        <div class="control-row">
+          <label for="derDeadband">Droop deadband (pu)</label>
+          <input id="derDeadband" type="range" min="0" max="0.05" step="0.005" value="0.005">
+          <output id="derDeadbandOut" for="derDeadband">0.005</output>
+        </div>
+        <p class="hint">The inverter injects Q on an IEEE-1547-style Volt-VAR droop; the solver iterates it to a fixed point. The N-1 scan re-runs with DER active.</p>
+      </div>
+
       <div class="button-grid">
         <button id="resetBtn" class="btn btn-ghost" type="button">Reset network</button>
-        <button id="contBtn" class="btn btn-primary" type="button">Run N-1 screen</button>
+        <button id="contBtn" class="btn btn-primary" type="button">Run N-1 security scan</button>
       </div>
       <p id="errorStatus" class="error-status" role="alert" hidden></p>
     </aside>
@@ -172,15 +207,48 @@
         </article>
 
         <article class="panel plot-panel">
-          <div class="plot-head"><h2>N-1 outage screening</h2><span class="plot-note">one branch removed at a time</span></div>
+          <div class="plot-head"><h2>Solar PV + battery impact</h2><span class="plot-note">Volt-VAR voltage support and peak shaving</span></div>
+          <div class="stat-grid">
+            <div class="stat"><span class="stat-label">Min |V| before</span><strong id="derVBefore">--</strong></div>
+            <div class="stat"><span class="stat-label">Min |V| after</span><strong id="derVAfter">--</strong></div>
+            <div class="stat"><span class="stat-label">Violations cleared</span><strong id="derVCleared">--</strong></div>
+            <div class="stat"><span class="stat-label">Inverter Q support</span><strong id="derQ">--</strong></div>
+            <div class="stat"><span class="stat-label">Peak shaved</span><strong id="derMWh">--</strong></div>
+            <div class="stat"><span class="stat-label">CO2e displaced</span><strong id="derCO2">--</strong></div>
+          </div>
+          <p id="derReadout" class="readout" aria-live="polite">Enable DER to compute impact against the unassisted solve.</p>
+        </article>
+
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>N-1 security scanner</h2><span class="plot-note">every line tripped, ranked by severity</span></div>
           <div class="table-scroll">
             <table id="contTable">
-              <caption>Each row is a full AC re-solve with one in-service branch removed</caption>
-              <thead><tr><th scope="col">Outage</th><th scope="col">Solved</th><th scope="col">Max loading</th><th scope="col">Overloads</th><th scope="col">V violations</th></tr></thead>
-              <tbody><tr><td colspan="5">Press Run N-1 screen to compute</td></tr></tbody>
+              <caption>Each row is a full AC re-solve with one in-service branch removed; click a row to preview the outage on the diagram</caption>
+              <thead><tr>
+                <th scope="col"><button class="th-sort" data-key="rank" type="button">Rank</button></th>
+                <th scope="col"><button class="th-sort" data-key="outage" type="button">Outage</button></th>
+                <th scope="col"><button class="th-sort" data-key="converged" type="button">Solved</button></th>
+                <th scope="col"><button class="th-sort" data-key="maxLoading" type="button">Max loading</button></th>
+                <th scope="col"><button class="th-sort" data-key="overloaded" type="button">Overloads</button></th>
+                <th scope="col"><button class="th-sort" data-key="voltageViolations" type="button">V viol</button></th>
+                <th scope="col"><button class="th-sort" data-key="severity" type="button">Severity</button></th>
+              </tr></thead>
+              <tbody><tr><td colspan="7">Press Run N-1 screen to compute</td></tr></tbody>
             </table>
           </div>
           <p id="contStatus" class="readout" aria-live="polite">Not yet computed</p>
+          <p id="contPreview" class="readout" aria-live="polite"></p>
+        </article>
+
+        <article class="panel plot-panel">
+          <div class="plot-head"><h2>Audit report + self-tests</h2><span class="plot-note">deterministic FNV-1a and SHA-256 checksums</span></div>
+          <div class="export-buttons">
+            <button id="auditJsonBtn" class="btn btn-primary" type="button">Audit JSON + checksum</button>
+            <button id="auditCsvBtn" class="btn" type="button">N-1 audit CSV</button>
+            <button id="selfTestBtn" class="btn" type="button">Run self-tests</button>
+          </div>
+          <p id="auditNote" class="readout" aria-live="polite">Audit exports and the self-test battery run entirely locally.</p>
+          <ul id="selfTestList" class="selftest-list" hidden></ul>
         </article>
       </div>
 

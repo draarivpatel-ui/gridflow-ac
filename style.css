@@ -150,3 +150,20 @@ svg#networkSvg { max-width: 100%; }
 .stat strong.ok { color: var(--fir); }
 .stat strong.warn { color: var(--warn); }
 .panel.warn { border-color: var(--warn); }
+.th-sort {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font: inherit; font-size: 0.74rem; text-transform: uppercase; font-weight: 600;
+  padding: 0; cursor: pointer; letter-spacing: 0;
+}
+.th-sort:hover, .th-sort.sorted { color: var(--accent); }
+.th-sort.sorted::after { content: ' *'; }
+#contTable tbody tr { cursor: pointer; }
+#contTable tbody tr:hover td { background: var(--surface-2); }
+#contTable tr.row-fail td { color: var(--warn); }
+#contTable tr.row-crit td:first-child { font-weight: 700; color: var(--warn); }
+#contTable tr.row-preview td { background: var(--accent-soft); }
+.selftest-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 0.78rem; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.selftest-list li { padding: 3px 0; border-bottom: 1px solid var(--border); color: var(--muted); }
+.selftest-mark { display: inline-block; min-width: 34px; font-weight: 700; }
+.selftest-mark.pass { color: var(--fir); }
+.selftest-mark.fail { color: var(--warn); }
