@@ -2,6 +2,8 @@
 
 A self-contained, zero-dependency AC power-flow workbench: damped Newton-Raphson solver, reactive-limit PV to PQ switching, DC approximation, branch flows and losses, N-1 contingency screening and local CSV/JSON exports. Every network is a synthetic teaching benchmark, not a published IEEE test system or measured grid data.
 
+**Live demo:** [https://aariv.me/gridflow-ac/](https://aariv.me/gridflow-ac/)
+
 ## Quick start
 
 Open `index.html` in any modern browser. There is no build step, no package install, no server and no network request. The engine `src/gridflow.cjs` is a plain browser script that also loads under Node as CommonJS, so the test suite executes the exact solver the page uses.
