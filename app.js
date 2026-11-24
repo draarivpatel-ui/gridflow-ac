@@ -25,10 +25,18 @@
     return (v && v.trim()) || fallback;
   }
 
+  function updateExportAvailability() {
+    const solutionReady = !!state.solution;
+    for (const id of ['jsonBtn', 'busCsvBtn', 'branchCsvBtn', 'convergenceCsvBtn', 'auditJsonBtn']) $(id).disabled = !solutionReady;
+    const scanReady = solutionReady && !!state.scan;
+    $('contCsvBtn').disabled = !scanReady;
+    $('auditCsvBtn').disabled = !scanReady;
+  }
+
   function showError(msg) {
     const node = $('errorStatus');
     node.textContent = msg; node.hidden = !msg;
-    for (const id of ['jsonBtn', 'busCsvBtn', 'branchCsvBtn', 'convergenceCsvBtn', 'contCsvBtn', 'auditJsonBtn', 'auditCsvBtn']) $(id).disabled = !!msg;
+    updateExportAvailability();
   }
 
   function loadPreset(name) {
@@ -553,16 +561,10 @@
       tr.classList.toggle('row-fail', !r.converged);
       tr.classList.toggle('row-crit', r.rank === 1 && r.severity > 0);
       tr.classList.toggle('row-preview', state.previewBranch === r.branchIndex);
-      const vals = [
-        String(r.rank), r.outage, r.converged ? 'yes' : 'NO',
-        r.maxLoading == null ? '--' : fmt(r.maxLoading * 100, 1) + '%',
-        String(r.overloaded ?? '--'), String(r.voltageViolations ?? '--'),
-        fmt(r.severity, 1)
-      ];
-      for (const v of vals) { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); }
-      tr.addEventListener('click', () => {
-        // Clicking a row previews that exact outage on the one-line diagram;
-        // clicking it again clears the preview.
+      const togglePreview = () => {
+        // Clicking the row or activating its native toggle button previews
+        // that exact outage on the one-line diagram; activating it again
+        // clears the preview.
         if (state.previewBranch === r.branchIndex) {
           state.previewBranch = null; state.previewRow = null;
           $('contPreview').textContent = '';
@@ -576,12 +578,35 @@
             ` | rank ${r.rank} of ${state.scan.results.length}`;
         }
         renderScanTable(); redraw();
+      };
+      const vals = [
+        String(r.rank), r.outage, r.converged ? 'yes' : 'NO',
+        r.maxLoading == null ? '--' : fmt(r.maxLoading * 100, 1) + '%',
+        String(r.overloaded ?? '--'), String(r.voltageViolations ?? '--'),
+        fmt(r.severity, 1)
+      ];
+      vals.forEach((v, cellIndex) => {
+        const td = document.createElement('td');
+        if (cellIndex === 1) {
+          const previewBtn = document.createElement('button');
+          previewBtn.type = 'button';
+          previewBtn.className = 'cont-preview-btn';
+          previewBtn.textContent = v;
+          previewBtn.setAttribute('aria-label', 'Preview outage ' + r.outage);
+          previewBtn.setAttribute('aria-pressed', String(state.previewBranch === r.branchIndex));
+          previewBtn.addEventListener('click', ev => { ev.stopPropagation(); togglePreview(); });
+          td.appendChild(previewBtn);
+        } else td.textContent = v;
+        tr.appendChild(td);
       });
+      tr.addEventListener('click', togglePreview);
       body.appendChild(tr);
     }
     for (const btn of $('contTable').querySelectorAll('thead .th-sort')) {
-      btn.setAttribute('aria-sort', btn.getAttribute('data-key') === state.sortKey ? state.sortDir : 'none');
-      btn.classList.toggle('sorted', btn.getAttribute('data-key') === state.sortKey);
+      const active = btn.getAttribute('data-key') === state.sortKey;
+      btn.parentNode.setAttribute('aria-sort', active ? (state.sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
+      btn.removeAttribute('aria-sort');
+      btn.classList.toggle('sorted', active);
     }
   }
 
@@ -597,6 +622,7 @@
       state.contingency = scan.results;
       state.previewBranch = null; state.previewRow = null;
       $('contPreview').textContent = '';
+      updateExportAvailability();
       renderScanTable();
       const band = `band ${fmt(scan.band.low, 2)}-${fmt(scan.band.high, 2)} pu`;
       $('contStatus').textContent =
@@ -606,6 +632,7 @@
         (state.der.enabled ? ' | DER active' : '');
     } catch (err) {
       state.contingency = null; state.scan = null;
+      updateExportAvailability();
       $('contStatus').textContent = 'N-1 screen failed: ' + err.message;
     }
   }

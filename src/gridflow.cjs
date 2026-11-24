@@ -106,12 +106,21 @@
       // Reactive limits may be infinite but never NaN, and only bind PV buses.
       if (Number.isNaN(qMin) || Number.isNaN(qMax)) throw new RangeError('nonfinite bus reactive limit at ' + bus.id);
       if (qMin > qMax) throw new RangeError('bus ' + bus.id + ' has qMin > qMax');
+      if (qMin === Infinity || qMax === -Infinity) throw new RangeError('bus ' + bus.id + ' has an impossible infinite reactive limit');
       if (type !== 'pv' && (qMin !== -Infinity || qMax !== Infinity)) {
         throw new RangeError('bus ' + bus.id + ' is ' + type + ': reactive limits only apply to pv buses');
       }
       if (bus.vm <= 0) throw new RangeError('bus voltage magnitude must be positive: ' + bus.id);
+      if (bus.baseKV <= 0) throw new RangeError('bus baseKV must be positive: ' + bus.id);
+      if (!(bus.vMin < bus.vMax)) throw new RangeError('bus ' + bus.id + ' requires vMin < vMax for a real voltage band');
+      if (!bus.id.trim()) throw new RangeError('blank bus id at index ' + i);
       return bus;
     });
+    var busIds = new Set();
+    for (var bu = 0; bu < buses.length; bu++) {
+      if (busIds.has(buses[bu].id)) throw new RangeError('duplicate bus id: ' + buses[bu].id);
+      busIds.add(buses[bu].id);
+    }
     var slackCount = buses.filter(function (b) { return b.type === 'slack'; }).length;
     if (slackCount !== 1) throw new RangeError('exactly one slack bus is required, got ' + slackCount);
 
@@ -132,10 +141,20 @@
         if (!isFiniteNumber(b[key])) throw new RangeError('nonfinite branch ' + key + ' at ' + b.id);
       }
       if (b.r * b.r + b.x * b.x < EPS) throw new RangeError('branch impedance is zero: ' + b.id);
+      if (b.r < 0) throw new RangeError('branch resistance must be nonnegative: ' + b.id);
       if (b.rateMVA <= 0) throw new RangeError('branch rating must be positive: ' + b.id);
+      if (!b.id.trim()) throw new RangeError('blank branch id at index ' + i);
       return b;
     });
-    var baseMVA = isFiniteNumber(raw.baseMVA) && raw.baseMVA > 0 ? Number(raw.baseMVA) : 100;
+    var branchIds = new Set();
+    for (var bru = 0; bru < branches.length; bru++) {
+      if (branchIds.has(branches[bru].id)) throw new RangeError('duplicate branch id: ' + branches[bru].id);
+      branchIds.add(branches[bru].id);
+    }
+    if (raw.baseMVA != null && (!isFiniteNumber(Number(raw.baseMVA)) || Number(raw.baseMVA) <= 0)) {
+      throw new RangeError('baseMVA must be a positive finite number');
+    }
+    var baseMVA = raw.baseMVA == null ? 100 : Number(raw.baseMVA);
     return { buses: buses, branches: branches, baseMVA: baseMVA };
   }
 
@@ -676,7 +695,9 @@
       branches: network.branches.map(function (b) { return Object.assign({}, b); }),
       baseMVA: network.baseMVA
     };
-    var f = clamp(Number(factor), 0, 4);
+    var factorNumber = Number(factor);
+    if (!isFiniteNumber(factorNumber)) throw new RangeError('load factor must be a finite number');
+    var f = clamp(factorNumber, 0, 4);
     for (var i = 0; i < copy.buses.length; i++) {
       copy.buses[i].pd *= f; copy.buses[i].qd *= f;
     }
@@ -810,8 +831,10 @@
    */
   function securityScan(rawNetwork, options) {
     var opts = options || {};
-    var vLow = isFiniteNumber(opts.vLow) ? opts.vLow : 0.95;
-    var vHigh = isFiniteNumber(opts.vHigh) ? opts.vHigh : 1.05;
+    if (opts.vLow != null && !isFiniteNumber(opts.vLow)) throw new RangeError('security band vLow must be finite');
+    if (opts.vHigh != null && !isFiniteNumber(opts.vHigh)) throw new RangeError('security band vHigh must be finite');
+    var vLow = opts.vLow != null ? opts.vLow : 0.95;
+    var vHigh = opts.vHigh != null ? opts.vHigh : 1.05;
     if (!(vLow < vHigh)) throw new RangeError('security band requires vLow < vHigh');
     var solverOpts = { tolerance: opts.tolerance, maxIter: opts.maxIter, enforceQLimits: opts.enforceQLimits };
     var network = normalizeNetwork(rawNetwork);
@@ -1168,7 +1191,10 @@
         maxVoltage: d ? d.maxVoltage : null,
         maxLoading: d ? d.maxLoading : null,
         overloaded: d ? d.overloaded : [],
-        voltageViolations: d ? d.voltageViolations : []
+        voltageViolations: d ? d.voltageViolations : [],
+        qLimited: sol && Array.isArray(sol.qLimited) ? sol.qLimited.map(function (q) {
+          return { bus: q.bus, id: q.id, qRequired: q.qRequired, qSet: q.qSet, bound: q.bound };
+        }) : []
       },
       buses: d ? sol.network.buses.map(function (b, i) {
         return { id: b.id, type: b.type, vm: sol.vm[i], va: sol.va[i],

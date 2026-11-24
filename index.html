@@ -223,7 +223,7 @@
           <div class="plot-head"><h2>N-1 security scanner</h2><span class="plot-note">every line tripped, ranked by severity</span></div>
           <div class="table-scroll">
             <table id="contTable">
-              <caption>Each row is a full AC re-solve with one in-service branch removed; click a row to preview the outage on the diagram</caption>
+              <caption>Each row is a full AC re-solve with one in-service branch removed; use its outage preview button to mark the outage on the diagram</caption>
               <thead><tr>
                 <th scope="col"><button class="th-sort" data-key="rank" type="button">Rank</button></th>
                 <th scope="col"><button class="th-sort" data-key="outage" type="button">Outage</button></th>
@@ -244,7 +244,7 @@
           <div class="plot-head"><h2>Audit report + self-tests</h2><span class="plot-note">deterministic FNV-1a and SHA-256 checksums</span></div>
           <div class="export-buttons">
             <button id="auditJsonBtn" class="btn btn-primary" type="button">Audit JSON + checksum</button>
-            <button id="auditCsvBtn" class="btn" type="button">N-1 audit CSV</button>
+            <button id="auditCsvBtn" class="btn" type="button" disabled>N-1 audit CSV</button>
             <button id="selfTestBtn" class="btn" type="button">Run self-tests</button>
           </div>
           <p id="auditNote" class="readout" aria-live="polite">Audit exports and the self-test battery run entirely locally.</p>
@@ -259,7 +259,7 @@
           <button id="busCsvBtn" class="btn" type="button">Bus CSV</button>
           <button id="branchCsvBtn" class="btn" type="button">Branch CSV</button>
           <button id="convergenceCsvBtn" class="btn" type="button">Convergence CSV</button>
-          <button id="contCsvBtn" class="btn" type="button">N-1 CSV</button>
+          <button id="contCsvBtn" class="btn" type="button" disabled>N-1 CSV</button>
         </div>
       </div>
     </section>

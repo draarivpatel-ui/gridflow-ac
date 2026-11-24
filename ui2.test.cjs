@@ -59,13 +59,13 @@ describe('N-1 security scanner table', () => {
     const h = bench();
     h.get('contBtn').click();
     const sev = sortBtn(h, 'severity');
-    assert.equal(sev.getAttribute('aria-sort'), 'none');
+    assert.equal(sev.parentNode.getAttribute('aria-sort'), 'none');
     sev.click();
-    assert.equal(sev.getAttribute('aria-sort'), 'desc');
+    assert.equal(sev.parentNode.getAttribute('aria-sort'), 'descending');
     const sevs = rows(h).map(tr => Number(tr.querySelectorAll('td')[6].textContent));
     assert.deepEqual(sevs, sevs.slice().sort((a, b) => b - a));
     sev.click();
-    assert.equal(sev.getAttribute('aria-sort'), 'asc');
+    assert.equal(sev.parentNode.getAttribute('aria-sort'), 'ascending');
     h.dispose();
   });
 

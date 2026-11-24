@@ -73,7 +73,8 @@ code, kbd, .readout, .stat strong, output, .badge { font-family: ui-monospace, S
 }
 .btn:hover { background: var(--accent-soft); }
 .btn:active { transform: translateY(1px); }
-.btn:focus-visible, select:focus-visible, input:focus-visible, canvas:focus-visible, .seg:focus-visible {
+.btn:focus-visible, select:focus-visible, input:focus-visible, canvas:focus-visible, .seg:focus-visible,
+.th-sort:focus-visible, .cont-preview-btn:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
@@ -153,8 +154,14 @@ svg#networkSvg { max-width: 100%; }
 .th-sort {
   appearance: none; border: 0; background: transparent; color: var(--muted);
   font: inherit; font-size: 0.74rem; text-transform: uppercase; font-weight: 600;
-  padding: 0; cursor: pointer; letter-spacing: 0;
+  padding: 2px 4px; min-height: 24px; cursor: pointer; letter-spacing: 0;
 }
+.cont-preview-btn {
+  appearance: none; border: 0; background: transparent; color: var(--accent);
+  font: inherit; font-weight: 600; text-align: left; text-decoration: underline;
+  text-underline-offset: 2px; padding: 2px 4px; min-width: 24px; min-height: 24px; cursor: pointer;
+}
+.cont-preview-btn[aria-pressed="true"] { color: var(--warn); font-weight: 700; }
 .th-sort:hover, .th-sort.sorted { color: var(--accent); }
 .th-sort.sorted::after { content: ' *'; }
 #contTable tbody tr { cursor: pointer; }
@@ -167,3 +174,12 @@ svg#networkSvg { max-width: 100%; }
 .selftest-mark { display: inline-block; min-width: 34px; font-weight: 700; }
 .selftest-mark.pass { color: var(--fir); }
 .selftest-mark.fail { color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
