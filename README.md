@@ -10,7 +10,7 @@ Open `index.html` in any modern browser. There is no build step, no package inst
 
 ```sh
 npm test
-# 302 tests, 0 failures
+# 316 tests, 0 failures
 ```
 
 Node 22 or newer is required for `node --test`. The browser needs no specific Node version.
@@ -32,6 +32,7 @@ Node 22 or newer is required for `node --test`. The browser needs no specific No
 | `ui.test.cjs` | Deterministic DOM/canvas interaction tests driven by `dom-harness.cjs` |
 | `ui2.test.cjs` | Scanner, click-preview, DER controls, audit exports and self-test UI tests |
 | `dom-harness.cjs` | Tiny dependency-free DOM, SVG, canvas and download double used only by tests |
+| `browser-check.cjs` | Dependency-free headless-Chrome audit of the live page at 1440x900 and 390x844 |
 
 ## Engine pipeline
 
@@ -98,8 +99,8 @@ Node 22 or newer is required for `node --test`. The browser needs no specific No
 
 ## Verification
 
-- `npm test` runs 302 tests (44 suites) over the real engine and the real page scripts, all passing with zero failures.
-- A headless-Chromium audit at 1440x900 and 390x844 exercised the N-1 scan, the contingency click-preview, the DER Volt-VAR controls, the audit exports and the self-test battery: 36 interaction checks passed with 0 console errors, 0 uncaught page errors, 0 external network requests and 0 horizontal overflow.
+- `npm test` runs 316 tests (44 suites) over the real engine and the real page scripts, all passing with zero failures.
+- `npm run test:browser` runs 54 dependency-free headless-Chrome checks at 1440x900 and 390x844. It exercises the N-1 scan, contingency click-preview, DER Volt-VAR controls, keyboard probes, theme contrast, audit export and self-test battery with 0 console errors, 0 uncaught page errors, 0 external network requests and 0 horizontal overflow. The checker uses an ephemeral local server port, an ephemeral DevTools port and a disposable browser profile.
 
 ## Licence
 
