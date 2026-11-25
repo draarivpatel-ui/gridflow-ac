@@ -16,7 +16,6 @@
     lastExport: ''
   };
 
-  let dpr = Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
 
   function fmt(v, d = 4) { return Number.isFinite(v) ? Number(v).toFixed(d) : '--'; }
   function cssVar(name, fallback) {
@@ -277,10 +276,11 @@
     const rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { width: 720 };
     const cssW = Math.max(300, Math.round(rect.width || 720));
     const cssH = Math.max(150, Math.round(cssW * (RATIOS[id] || 0.32)));
-    const pw = Math.round(cssW * dpr), ph = Math.round(cssH * dpr);
+    const scale = Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
+    const pw = Math.round(cssW * scale), ph = Math.round(cssH * scale);
     if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
     return { ctx, w: cssW, h: cssH };
   }
@@ -705,6 +705,8 @@
       $('helpToggle').setAttribute('aria-expanded', String(!p.hidden));
     });
     globalThis.addEventListener('resize', () => { if (state.solution) redraw(); });
+    globalThis.addEventListener('beforeprint', () => { if (state.solution) redraw(); });
+    globalThis.addEventListener('afterprint', () => { if (state.solution) redraw(); });
 
     // Keyboard probes on the three numeric canvases.
     for (const [id, key, maxFn] of [
