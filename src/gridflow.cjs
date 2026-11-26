@@ -714,9 +714,10 @@
        character is =, + or @, or a leading - that does not form a plain
        number, is evaluated as a formula by Excel and Sheets. Prefixing a
        single quote makes the same applications show it as text. */
-    var t = s.trimStart();
-    if (t && (t[0] === '=' || t[0] === '+' || t[0] === '@' ||
-        (t[0] === '-' && !isFiniteNumber(Number(t))))) {
+    var lead = (/^[\s\p{Cf}\p{Cc}]*/u.exec(s) || [''])[0];
+    var first = s.charAt(lead.length);
+    var plainNumber = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(s.slice(lead.length));
+    if (lead.length > 0 || (first !== '' && '=+-@'.indexOf(first) !== -1 && !(first === '-' && plainNumber))) {
       s = "'" + s;
     }
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;

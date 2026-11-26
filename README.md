@@ -10,7 +10,7 @@ Open `index.html` in any modern browser. There is no build step, no package inst
 
 ```sh
 npm test
-# 316 tests, 0 failures
+# 317 tests, 0 failures
 ```
 
 Node 22 or newer is required for `node --test`. The browser needs no specific Node version.
@@ -99,7 +99,7 @@ Node 22 or newer is required for `node --test`. The browser needs no specific No
 
 ## Verification
 
-- `npm test` runs 316 tests (44 suites) over the real engine and the real page scripts, all passing with zero failures.
+- `npm test` runs 317 tests (44 suites) over the real engine and the real page scripts, all passing with zero failures.
 - `npm run test:browser` runs 54 dependency-free headless-Chrome checks at 1440x900 and 390x844. It exercises the N-1 scan, contingency click-preview, DER Volt-VAR controls, keyboard probes, theme contrast, audit export and self-test battery with 0 console errors, 0 uncaught page errors, 0 external network requests and 0 horizontal overflow. The checker uses an ephemeral local server port, an ephemeral DevTools port and a disposable browser profile.
 
 ## Licence

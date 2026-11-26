@@ -4,7 +4,7 @@
   "private": true,
   "description": "Interactive AC power-flow workbench with a damped Newton-Raphson solver, DC approximation, Ybus analysis, line flows, N-1 contingency screening and local CSV/JSON exports",
   "scripts": {
-    "test": "node --test --test-reporter=spec test/gridflow.test.cjs test/numerics.test.cjs test/physics.test.cjs test/hygiene.test.cjs test/adversarial.test.cjs test/security.test.cjs test/der.test.cjs test/audit.test.cjs test/l507-regressions.test.cjs test/l515-regressions.test.cjs ui.test.cjs ui2.test.cjs",
+    "test": "node --test --test-reporter=spec test/gridflow.test.cjs test/numerics.test.cjs test/physics.test.cjs test/hygiene.test.cjs test/adversarial.test.cjs test/security.test.cjs test/der.test.cjs test/audit.test.cjs test/l507-regressions.test.cjs test/l515-regressions.test.cjs ui.test.cjs ui2.test.cjs test/batch6-hardening.test.mjs",
     "test:browser": "node browser-check.cjs"
   },
   "keywords": ["power-flow", "newton-raphson", "ybus", "grid", "electrical-engineering", "n-1"],
